@@ -1,0 +1,73 @@
+name: optima-rfid
+
+x-toolchain: &toolchain
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: optima-rfid-toolchain:1.0.0
+  working_dir: /app
+  volumes:
+    - .:/app
+    # node_modules & cache disimpan di volume supaya tidak menimpa folder host
+    # dan tidak perlu download ulang setiap build.
+    - node_modules:/app/node_modules
+    - gradle_cache:/root/.gradle
+    - npm_cache:/root/.npm
+    # Output build Android dipisah dari folder host. File autolinking & CMake
+    # menyimpan path absolut, jadi build Windows tidak boleh tercampur build
+    # Linux di dalam container (dan sebaliknya).
+    - android_build:/app/android/build
+    - android_app_build:/app/android/app/build
+    - android_cxx:/app/android/app/.cxx
+    - android_project_cache:/app/android/.gradle
+    - android_kotlin_cache:/app/android/.kotlin
+  environment:
+    CI: "1"
+    GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -Dorg.gradle.daemon=false"
+    ANDROID_HOME: /opt/android-sdk
+    JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+
+services:
+  # Shell interaktif untuk perintah ad-hoc: npm ci, npm test, dsb.
+  toolchain:
+    <<: *toolchain
+    container_name: optima-rfid-toolchain
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # Metro bundler untuk mode development.
+  metro:
+    <<: *toolchain
+    container_name: optima-rfid-metro
+    command: ["npx", "react-native", "start", "--host", "0.0.0.0"]
+    ports:
+      - "8081:8081"
+
+  # Build APK debug ke ./artifacts.
+  builder:
+    <<: *toolchain
+    container_name: optima-rfid-builder
+    command:
+      - "bash"
+      - "-c"
+      - "mkdir -p artifacts && npm run android:apk && cp -f android/app/build/outputs/apk/debug/app-debug.apk artifacts/optima-rfid-debug.apk && ls -lh artifacts"
+
+  # Build APK release (ditandatangani debug keystore — untuk uji internal).
+  builder-release:
+    <<: *toolchain
+    container_name: optima-rfid-builder-release
+    command:
+      - "bash"
+      - "-c"
+      - "mkdir -p artifacts && npm run android:release && cp -f android/app/build/outputs/apk/release/app-release.apk artifacts/optima-rfid-release.apk && ls -lh artifacts"
+
+volumes:
+  node_modules:
+  gradle_cache:
+  npm_cache:
+  android_build:
+  android_app_build:
+  android_cxx:
+  android_project_cache:
+  android_kotlin_cache:

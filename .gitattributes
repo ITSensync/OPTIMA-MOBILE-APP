@@ -1,0 +1,6 @@
+# Pastikan script shell tetap LF saat di-checkout di Windows.
+*.sh text eol=lf
+gradlew text eol=lf
+docker/*.sh text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
