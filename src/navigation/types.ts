@@ -1,5 +1,10 @@
 import type { NavigatorScreenParams } from '@react-navigation/native';
 
+export type PlacementTabParamList = {
+  Placement: undefined;
+  History: undefined;
+};
+
 export type TabParamList = {
   Inventory: undefined;
   Tags: undefined;

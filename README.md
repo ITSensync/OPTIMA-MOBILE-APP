@@ -1,11 +1,9 @@
 # OPTIMA RFID
 
-Aplikasi Android (React Native 0.88) untuk membaca tag RFID UHF, menyimpan identitas tag,
-dan mencatat setiap pembacaan beserta waktu baca. Data disimpan lokal di perangkat
-(AsyncStorage) — belum ada backend.
-
-Tujuan tahap ini: **mencatat barang dan pergerakannya menggunakan tag RFID UHF**
-(inbound, outbound, dan perpindahan lokasi). Data saat ini disimpan lokal di perangkat.
+Aplikasi Android React Native untuk site employee pada handheld UHF. Flow P0 saat ini
+adalah **placement barang hasil repacking ke rak active** melalui API backend utama.
+Backend menjadi source of truth; mobile hanya menyimpan pending submission sementara agar
+retry timeout tetap menggunakan payload dan `client_request_id` yang sama.
 
 ---
 
@@ -24,14 +22,9 @@ mode yang aktif pada unit Anda.
 
 ## 2. Fitur
 
-- **Inventory** — proses inbound, outbound, dan relocation dengan scan melalui tombol fisik handheld.
-- **Penempatan** — inbound dan relocation menyimpan ruangan serta rak; tag inbound yang belum ditempatkan disimpan lokal, dicek kembali saat aplikasi dibuka, dan muncul di notifikasi setelah 1 menit.
-- **Master tag** — tag baru tampil setelah inbound dikonfirmasi; tersedia pencarian EPC, status stok, dan lokasi barang.
-- **Riwayat** — tag baru terdaftar, inbound, relocation, dan outbound; dapat difilter berdasarkan tanggal dan EPC.
-- **Pengaturan** — operator, getar, sumber reader, hapus data.
-- **Diagnostics** — informasi perangkat dan statistik penyimpanan.
-- **Simulasi** — untuk uji coba tanpa reader.
-- **Feedback haptic** — getar saat handheld membaca tag.
+- **Placement** — scan satu atau banyak RFID, deduplikasi, preview eligibility, pilih rak active, review, dan submit.
+- **History** — ringkasan placement dari API backend.
+- **Reader UHF** — scan melalui tombol fisik handheld dengan feedback haptic.
 
 ---
 
@@ -84,14 +77,31 @@ Di Windows bisa langsung:
 > Build APK debug sekali dulu, karena `run-android` di dalam container
 > tidak bisa mengakses USB device.
 
+### Konfigurasi API placement
+
+Development default untuk handheld pada jaringan yang sama dengan backend:
+
+```env
+# .env.development
+API_BASE_URL=http://192.168.18.16:3000
+```
+
+Android debug mengizinkan HTTP cleartext untuk development. Production wajib menyediakan
+`API_BASE_URL` HTTPS saat build dan tidak menggunakan fallback lokal. Untuk release,
+salin `.env.production.example` menjadi `.env.production`, atau build dengan:
+
+```bash
+cd android && ENVFILE=.env.production ./gradlew assembleRelease
+```
+
 ### Cara pakai di lapangan
 
-1. Buka tab **Inventory** dan pilih inbound, outbound, atau relocation.
-2. Tekan tombol fisik handheld untuk membaca tag. EPC yang terbaca akan tampil pada transaksi.
-3. Untuk inbound, lengkapi detail barang dan penempatan, lalu konfirmasi.
-4. Tag baru masuk ke tab **Tag** setelah inbound dikonfirmasi.
-5. Lihat tab **Riwayat** untuk tag baru terdaftar dan transaksi inventory; gunakan filter tanggal, kategori, atau EPC.
-6. Jika tombol fisik tidak merespons, periksa panduan reader di **Diagnostics**.
+1. Buka tab **Placement** dan tekan tombol fisik handheld untuk membaca RFID.
+2. Hapus RFID yang salah bila diperlukan, lalu tekan **Validasi RFID**.
+3. Pilih rak active yang tersedia dari backend.
+4. Periksa jumlah dan daftar barang, lalu tekan **Submit placement**.
+5. Jika request timeout, aplikasi otomatis retry sekali dan mempertahankan ID yang sama.
+6. Lihat tab **History** untuk ringkasan placement dari backend.
 
 ### Build APK
 
@@ -167,85 +177,51 @@ cd android && ./gradlew assembleDebug
 
 ---
 
-## 6. Struktur proyek
+## 6. Struktur dan alur placement
 
 ```
 src/
-├─ domain/            # logika murni, mudah diuji
-│  ├─ epc.ts          # normalisasi & validasi EPC
-│  ├─ reading.ts      # utilitas pembacaan lama
-│  ├─ datetime.ts     # format tanggal Indonesia & kunci harian
-│  └─ types.ts
-├─ reader/            # sumber data reader
-│  ├─ nativeUhf.ts         # bridge TypeScript ke modul UHF Android
-│  ├─ useUhfReader.ts      # kontrol reader UHF internal
-├─ storage/           # AsyncStorage, satu tanggung jawab per file
-│  ├─ tagRepo.ts      # master tag + recordReading()
-│  ├─ logRepo.ts      # riwayat per hari + flush tertunda
-│  ├─ settingsRepo.ts
-│  ├─ export.ts       # CSV + share sheet
-│  └─ json.ts         # wrapper aman JSON + antrian tulis
-├─ screens/           # Inventory, Tags, History, Settings, Diagnostics, TagDetail
-├─ navigation/        # bottom tabs + native stack
-├─ state/             # SettingsProvider
-├─ components/        # komponen UI reusable
-└─ theme.ts
+├─ api/placementApi.ts              # racks, preview, placement, history
+├─ screens/PlacementScreen.tsx      # scan → preview → rak → submit
+├─ screens/PlacementHistoryScreen.tsx
+├─ storage/placementSubmissionRepo.ts # pending idempotent request
+├─ domain/placement.ts              # grouping history dan label UI
+├─ reader/                           # bridge UHF handheld
+└─ navigation/                       # tab Placement dan History
 ```
+
+Alur placement:
+
+```
+Reader UHF
+  → dedupe RFID
+  → POST /api/mobile/placements/preview
+  → GET /api/mobile/racks?status=active
+  → review
+  → POST /api/mobile/placements
+  → GET /api/mobile/placements/history
+```
+
+Mobile tidak mengakses database dan tidak mengubah status lokal menjadi `placed`.
+Submission disimpan sebelum request dikirim. Timeout melakukan satu retry otomatis dengan
+payload serta `client_request_id` yang sama; pending request dipulihkan setelah restart.
+
+### Penyimpanan lokal yang diizinkan
+
+AsyncStorage hanya digunakan untuk preferensi reader dan pending placement submission.
+Data rack, status barang, dan history tetap berasal dari backend.
 
 ---
 
-## 7. Cara kerja
-
-### Alur satu pembacaan
-
-```
-Reader UHF ──SDK inventory event──► normalizeEpc() ── gagal ──► banner error
-                                          │ valid
-                                          ▼
-                              recordReading()  (antrian tulis, atomik)
-                                          │
-                     ┌────────────────────┼─────────────────────┐
-                     ▼                    ▼                     ▼
-              upsert master tag     dedupe check         append log harian
-              (tag:<EPC>)      (lastSeenAt + window)     (log:YYYY-MM-DD)
-```
-
-### Model data (minimal)
-
-```ts
-Tag     { epc, firstSeenAt, lastSeenAt, readCount }
-Reading { id, epc, at, atMs, status, readCount }
-```
-
-- Pembacaan pada Inventory dipakai untuk menyiapkan transaksi, bukan membuat master tag.
-- Master tag baru dibuat saat inbound dikonfirmasi.
-- Riwayat pengguna berisi tag baru terdaftar dan transaksi inventory.
-
-### Key AsyncStorage
-
-| Key                        | Isi                         |
-| -------------------------- | --------------------------- |
-| `optima:v1:tag:<EPC>`      | satu record tag             |
-| `optima:v1:tagIndex`       | array EPC untuk listing     |
-| `optima:v1:log:YYYY-MM-DD` | array pembacaan per hari    |
-| `optima:v1:logIndex`       | daftar hari yang punya data |
-| `optima:v1:settings`       | preferensi                  |
-| `optima:v1:schemaVersion`  | versi skema                 |
-
-Log scan lama dipertahankan untuk kompatibilitas data, tetapi tidak ditampilkan
-sebagai riwayat pengguna. Riwayat baru hanya berisi kejadian bisnis inventory.
-
----
-
-## 8. Recon device EL-UHF-RH02
+## 7. Reader device EL-UHF-RH02
 
 Mode UHF internal memakai bridge native dan SDK UHF-G yang dibundel dalam aplikasi.
-Jika tombol fisik tidak merespons, periksa panduan reader di **Diagnostics**.
+Jika tombol fisik tidak merespons, periksa status reader pada layar **Placement**.
 Catat hasil tes perangkat di [`DEVICE-NOTES.md`](DEVICE-NOTES.md).
 
 ---
 
-## 9. Pindah device / developer baru
+## 8. Pindah device / developer baru
 
 Yang perlu dilakukan di komputer baru **hanya**:
 
@@ -269,16 +245,7 @@ docker compose down -v
 
 ---
 
-## 10. Export CSV
-
-Kolom berisi jenis kejadian bisnis, waktu, EPC, lokasi asal, dan lokasi tujuan.
-Export tersedia melalui **Setelan → Export semua (CSV)**.
-
-File dibagikan lewat share sheet Android (WhatsApp, Drive, email, dll), tanpa library tambahan.
-
----
-
-## 11. Kualitas kode
+## 9. Kualitas kode
 
 ```bash
 npm run typecheck   # TypeScript strict, no emit
@@ -290,7 +257,7 @@ Semua pengujian berjalan tanpa device dan tanpa AsyncStorage asli.
 
 ---
 
-## 12. Troubleshooting
+## 10. Troubleshooting
 
 **`docker compose run builder` gagal di `sdkmanager`**
 Sejak Android 37, nama paket platform memakai versi minor: `platforms;android-37.0`
@@ -311,12 +278,12 @@ Jalankan `adb reverse tcp:8081 tcp:8081`, pastikan container `metro` hidup dan p
 Aktifkan Opsi Pengembang → USB debugging, lalu izinkan komputer di dialog RSA.
 Untuk wireless: `adb tcpip 5555` lalu `adb connect <ip-hp>:5555`.
 
-**Reader tidak menghasilkan apa pun di Inventory**
-Pastikan status UHF internal siap, lalu periksa panduan reader di Diagnostics.
+**Reader tidak menghasilkan RFID**
+Pastikan status UHF internal siap dan reader berada dalam jangkauan tag.
 
-**Data terasa lambat setelah ribuan baris**
-Hapus riwayat lama (Setelan → Hapus riwayat) atau export lalu bersihkan. Struktur
-repository sengaja dipisah agar migrasi ke SQLite nanti hanya mengganti `src/storage`.
+**API tidak dapat dihubungi**
+Pastikan handheld dan komputer backend berada pada jaringan yang sama, API berjalan di
+port 3000, firewall mengizinkan koneksi, dan `API_BASE_URL` sesuai environment build.
 
 **Build gagal di `configureCMakeDebug[x86_64]` (Windows, file lock)**
 Build default sudah dibatasi ke ARM64. Bila lock tetap terjadi, tutup Android Studio/Explorer
@@ -332,13 +299,13 @@ docker compose run --rm toolchain bash -c \
 
 ---
 
-## 13. Roadmap
+## 11. Roadmap
 
 1. Scaffold + Docker + APK ✅
 2. Native bridge UHF-G + kontrol trigger fisik ✅
-3. Dedupe + master tag + riwayat + export ✅
-4. Migrasi storage ke SQLite bila volume log sudah besar.
-5. Sinkronisasi ke backend (opsional) + autentikasi operator.
+3. Placement terintegrasi dengan backend ✅
+4. Auth site employee dan HTTPS production.
+5. Relocation, reuse RFID, opname, dan operasi lain sesuai roadmap backend.
 
 ---
 

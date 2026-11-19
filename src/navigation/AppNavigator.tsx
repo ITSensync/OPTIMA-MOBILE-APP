@@ -6,23 +6,14 @@ import {
   type Theme,
 } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { DiagnosticsScreen } from '../screens/DiagnosticsScreen';
-import { HistoryScreen } from '../screens/HistoryScreen';
-import { InventoryScreen } from '../screens/InventoryScreen';
-import { NotificationsScreen } from '../screens/NotificationsScreen';
-import { PendingPlacementScreen } from '../screens/PendingPlacementScreen';
-import { PlacementSettingsScreen } from '../screens/PlacementSettingsScreen';
-import { SettingsScreen } from '../screens/SettingsScreen';
-import { TagDetailScreen } from '../screens/TagDetailScreen';
-import { TagsScreen } from '../screens/TagsScreen';
+import { PlacementHistoryScreen } from '../screens/PlacementHistoryScreen';
+import { PlacementScreen } from '../screens/PlacementScreen';
 import { colors } from '../theme';
-import type { RootStackParamList, TabParamList } from './types';
+import type { PlacementTabParamList } from './types';
 
-const Tab = createBottomTabNavigator<TabParamList>();
-const Stack = createNativeStackNavigator<RootStackParamList>();
+const Tab = createBottomTabNavigator<PlacementTabParamList>();
 
 const theme: Theme = {
   ...DarkTheme,
@@ -37,11 +28,9 @@ const theme: Theme = {
   },
 };
 
-const ICONS: Record<keyof TabParamList, string> = {
-  Inventory: '▣',
-  Tags: '▤',
+const ICONS: Record<keyof PlacementTabParamList, string> = {
+  Placement: '▣',
   History: '≡',
-  Settings: '⚙',
 };
 
 function Tabs() {
@@ -66,25 +55,11 @@ function Tabs() {
         ),
       })}
     >
-      <Tab.Screen
-        name="Inventory"
-        component={InventoryScreen}
-        options={{ title: 'Inventory' }}
-      />
-      <Tab.Screen
-        name="Tags"
-        component={TagsScreen}
-        options={{ title: 'Tag' }}
-      />
+      <Tab.Screen name="Placement" component={PlacementScreen} options={{ title: 'Placement' }} />
       <Tab.Screen
         name="History"
-        component={HistoryScreen}
-        options={{ title: 'Riwayat' }}
-      />
-      <Tab.Screen
-        name="Settings"
-        component={SettingsScreen}
-        options={{ title: 'Setelan' }}
+        component={PlacementHistoryScreen}
+        options={{ title: 'History' }}
       />
     </Tab.Navigator>
   );
@@ -93,45 +68,7 @@ function Tabs() {
 export function AppNavigator() {
   return (
     <NavigationContainer theme={theme}>
-      <Stack.Navigator
-        screenOptions={{
-          headerStyle: { backgroundColor: colors.surface },
-          headerTintColor: colors.text,
-          headerTitleStyle: { fontWeight: '700' },
-          contentStyle: { backgroundColor: colors.bg },
-        }}
-      >
-        <Stack.Screen
-          name="Main"
-          component={Tabs}
-          options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          name="TagDetail"
-          component={TagDetailScreen}
-          options={{ title: 'Detail Tag' }}
-        />
-        <Stack.Screen
-          name="Diagnostics"
-          component={DiagnosticsScreen}
-          options={{ title: 'Diagnostics' }}
-        />
-        <Stack.Screen
-          name="Notifications"
-          component={NotificationsScreen}
-          options={{ title: 'Notifikasi' }}
-        />
-        <Stack.Screen
-          name="PendingPlacement"
-          component={PendingPlacementScreen}
-          options={{ title: 'Detail Penempatan' }}
-        />
-        <Stack.Screen
-          name="PlacementSettings"
-          component={PlacementSettingsScreen}
-          options={{ title: 'Daftar Penempatan' }}
-        />
-      </Stack.Navigator>
+      <Tabs />
     </NavigationContainer>
   );
 }
