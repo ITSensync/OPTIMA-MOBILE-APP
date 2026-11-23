@@ -4,7 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.SoundPool
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
@@ -46,6 +48,10 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
     private const val TAG_EVENT = "UhfReaderTag"
     private const val STATUS_EVENT = "UhfReaderStatus"
     private const val TRIGGER_EVENT = "UhfReaderTrigger"
+    // UHF-G Power 5 matches the close-range read distance configured on the
+    // handheld. Apply it before every inventory start because the vendor SDK
+    // can restore its default power when a new inventory is opened.
+    private const val READER_POWER = 5
     private const val VENDOR_DEX_ASSET = "uhf-g/classes.dex"
     private const val VENDOR_CLASS = "com.handheld.uhfr.UHFRManager"
     private val TRIGGER_ACTIONS = arrayOf("android.rfid.FUN_KEY", "android.intent.action.FUN_KEY")
@@ -67,7 +73,10 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
   private val worker = Executors.newSingleThreadExecutor()
   private val pollWorker = Executors.newSingleThreadExecutor()
   private val feedbackHandler = Handler(Looper.getMainLooper())
-  @Volatile private var scanToneGenerator: ToneGenerator? = null
+  @Volatile private var scanSoundPool: SoundPool? = null
+  @Volatile private var scanSoundId = 0
+  @Volatile private var scanSoundLoaded = false
+  @Volatile private var fallbackToneGenerator: ToneGenerator? = null
   private val reading = AtomicBoolean(false)
   private val triggerPressed = AtomicBoolean(false)
   private val lastTriggerAtMs = AtomicLong(0)
@@ -154,6 +163,7 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
         // by pressing the handheld trigger without restarting the app.
         registerTriggerReceiver()
         ensureManager()
+        prepareScanSound()
         emitStatus("ready", "Reader UHF siap")
         promise.resolve(statusMap("ready", "Reader UHF siap"))
       } catch (error: Throwable) {
@@ -206,11 +216,16 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
   fun playScanFeedback() {
     feedbackHandler.post {
       try {
-        val tone = scanToneGenerator ?: ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
-          .also { scanToneGenerator = it }
-        tone.startTone(ToneGenerator.TONE_PROP_BEEP, 55)
-        feedbackHandler.postDelayed({ tone.startTone(ToneGenerator.TONE_PROP_BEEP, 55) }, 145)
-        feedbackHandler.postDelayed({ tone.startTone(ToneGenerator.TONE_PROP_BEEP, 55) }, 225)
+        val pool = scanSoundPool
+        if (pool != null && scanSoundLoaded) {
+          val streamId = pool.play(scanSoundId, 1f, 1f, 1, 0, 1f)
+          if (streamId != 0) return@post
+        }
+
+        // Fallback while the WAV is loading or if the audio device rejects it.
+        val tone = fallbackToneGenerator ?: ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+          .also { fallbackToneGenerator = it }
+        tone.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
       } catch (_: RuntimeException) {
         // Audio feedback must not interfere with tag reading.
       }
@@ -230,8 +245,12 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
 
   override fun invalidate() {
     feedbackHandler.removeCallbacksAndMessages(null)
-    scanToneGenerator?.release()
-    scanToneGenerator = null
+    scanSoundPool?.release()
+    scanSoundPool = null
+    scanSoundId = 0
+    scanSoundLoaded = false
+    fallbackToneGenerator?.release()
+    fallbackToneGenerator = null
     stopReadingInternal("invalidate")
     manager?.let {
       try {
@@ -247,6 +266,34 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
     pollWorker.shutdownNow()
     worker.shutdownNow()
     super.invalidate()
+  }
+
+  /** Loads a real short beep so feedback does not depend on notification tones. */
+  private fun prepareScanSound() {
+    if (scanSoundPool != null) return
+    try {
+      val attributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
+      val pool = SoundPool.Builder()
+        .setAudioAttributes(attributes)
+        .setMaxStreams(2)
+        .build()
+      pool.setOnLoadCompleteListener { _, sampleId, status ->
+        if (status == 0 && sampleId == scanSoundId) {
+          scanSoundLoaded = true
+        }
+      }
+      scanSoundPool = pool
+      scanSoundId = pool.load(context, R.raw.scanner_beep, 1)
+    } catch (_: RuntimeException) {
+      // The ToneGenerator fallback remains available if SoundPool is unsupported.
+      scanSoundPool?.release()
+      scanSoundPool = null
+      scanSoundId = 0
+      scanSoundLoaded = false
+    }
   }
 
   private fun ensureManager() {
@@ -309,7 +356,13 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
 
   private fun startReadingInternal(source: String): Pair<String, String> {
     ensureManager()
-    if (reading.getAndSet(true)) return "reading" to "Reader sudah sedang membaca"
+    if (reading.get()) return "reading" to "Reader sudah sedang membaca"
+
+    // UHF-G stores its own settings separately from this application. Set the
+    // power here as well so OPTIMA cannot fall back to the reader default
+    // (33) after UHF-G has been closed.
+    setReaderPower(READER_POWER)
+    reading.set(true)
 
     val result = try {
       invokeManager("asyncStartReading")
@@ -479,6 +532,41 @@ class UhfReaderModule(private val context: ReactApplicationContext) :
     val method: Method = clazz.getMethod(methodName)
     return method.invoke(instance)
   }
+
+  /**
+   * Applies the reader output power through the vendor SDK. UHF-G exposes
+   * this as setPower(readPower, writePower), not setPower(power).
+   */
+  private fun setReaderPower(power: Int) {
+    val clazz = managerClass ?: error("Reader belum diinisialisasi")
+    val instance = manager ?: error("Reader belum terhubung")
+    val method = clazz.methods.firstOrNull { candidate ->
+      candidate.name == "setPower" && candidate.parameterTypes.size == 2 &&
+        candidate.parameterTypes.all(::isNumericType)
+    } ?: error("SDK UHF-G tidak menyediakan setPower(readPower, writePower)")
+
+    val readPower = numericArgument(method.parameterTypes[0], power)
+    val writePower = numericArgument(method.parameterTypes[1], power)
+    method.invoke(instance, readPower, writePower)
+  }
+
+  private fun numericArgument(type: Class<*>, value: Int): Any = when (type) {
+    java.lang.Byte.TYPE, java.lang.Byte::class.java -> value.toByte()
+    java.lang.Short.TYPE, java.lang.Short::class.java -> value.toShort()
+    java.lang.Integer.TYPE, java.lang.Integer::class.java -> value
+    java.lang.Long.TYPE, java.lang.Long::class.java -> value.toLong()
+    java.lang.Float.TYPE, java.lang.Float::class.java -> value.toFloat()
+    java.lang.Double.TYPE, java.lang.Double::class.java -> value.toDouble()
+    else -> error("Tipe parameter setPower tidak didukung: ${type.name}")
+  }
+
+  private fun isNumericType(type: Class<*>): Boolean =
+    type == java.lang.Byte.TYPE || type == java.lang.Byte::class.java ||
+      type == java.lang.Short.TYPE || type == java.lang.Short::class.java ||
+      type == java.lang.Integer.TYPE || type == java.lang.Integer::class.java ||
+      type == java.lang.Long.TYPE || type == java.lang.Long::class.java ||
+      type == java.lang.Float.TYPE || type == java.lang.Float::class.java ||
+      type == java.lang.Double.TYPE || type == java.lang.Double::class.java
 
   private fun registerTriggerReceiver() {
     if (receiverRegistered) return

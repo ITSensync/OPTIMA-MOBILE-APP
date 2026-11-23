@@ -90,6 +90,7 @@ export function PlacementScreen() {
   const [successText, setSuccessText] = useState<string>();
   const [pending, setPending] = useState<PendingPlacementSubmission | null>(null);
   const autoRetried = useRef(false);
+  const scannedRfidKeys = useRef(new Set<string>());
 
   const loadRacks = useCallback(async () => {
     setLoadingRacks(true);
@@ -110,11 +111,11 @@ export function PlacementScreen() {
     (raw: string) => {
       const value = raw.trim();
       if (!value) return;
+      const key = rfidKey(value);
+      if (scannedRfidKeys.current.has(key)) return;
+      scannedRfidKeys.current.add(key);
       playScanFeedback(settings.haptics);
-      setScannedRfidNumbers(current => {
-        if (current.some(item => rfidKey(item) === rfidKey(value))) return current;
-        return [...current, value];
-      });
+      setScannedRfidNumbers(current => [...current, value]);
       setPreview(null);
       setValidatedItems([]);
       setSelectedRack(null);
@@ -179,6 +180,7 @@ export function PlacementScreen() {
       await clearPendingPlacementSubmission();
       setPending(null);
       setSubmitState('success');
+      scannedRfidKeys.current.clear();
       setScannedRfidNumbers([]);
       setValidatedItems([]);
       setPreview(null);
@@ -200,6 +202,7 @@ export function PlacementScreen() {
     void getPendingPlacementSubmission().then(saved => {
       if (!saved) return;
       setPending(saved);
+      scannedRfidKeys.current = new Set(saved.rfidNumbers.map(rfidKey));
       setScannedRfidNumbers(saved.rfidNumbers);
       if (!autoRetried.current) {
         autoRetried.current = true;
@@ -236,6 +239,7 @@ export function PlacementScreen() {
   }, [preview, scannedRfidNumbers, selectedRack, submitSaved, validatedItems]);
 
   const removeRfid = useCallback((rfid: string) => {
+    scannedRfidKeys.current.delete(rfidKey(rfid));
     setScannedRfidNumbers(current => current.filter(item => item !== rfid));
     setValidatedItems(current => current.filter(item => item.rfid_number !== rfid));
     setPreview(null);

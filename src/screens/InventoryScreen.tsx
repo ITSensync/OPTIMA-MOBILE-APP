@@ -161,11 +161,11 @@ export function InventoryScreen() {
         );
         return;
       }
-      playScanFeedback(settings.haptics);
       if (seenEpcs.current.has(epc)) {
         return;
       }
       seenEpcs.current.add(epc);
+      playScanFeedback(settings.haptics);
       setItems(current => [...current, { epc, atMs }]);
       try {
         if (operation === 'inbound') {
