@@ -49,8 +49,8 @@ export function PlacementHistoryScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Text style={styles.title}>History placement</Text>
-        <Text style={styles.subtitle}>Ringkasan placement dari backend.</Text>
+        <Text style={styles.title}>History aktivitas</Text>
+        <Text style={styles.subtitle}>Ringkasan placement dan relocation dari backend.</Text>
       </View>
       {error ? (
         <View style={styles.errorBox}>
@@ -73,16 +73,17 @@ export function PlacementHistoryScreen() {
 
 function HistoryRow({ group }: { group: PlacementHistoryGroup }) {
   const rack = group.rack ? `${group.rack.code}${group.rack.name ? ` · ${group.rack.name}` : ''}` : 'Rak tidak tersedia';
+  const fromRacks = group.fromRacks.map(item => `${item.code}${item.name ? ` · ${item.name}` : ''}`).join(', ');
   const statuses = group.statuses.map(placementStatusLabel).join(', ');
   return (
     <View style={styles.row}>
       <Text style={styles.action}>{movementLabel(group.movementType)}</Text>
       <Text style={styles.meta}>{localDateTime(group.createdAt)}</Text>
-      <Text style={styles.summary}>{group.total} barang · {rack}</Text>
+      <Text style={styles.summary}>{group.total} barang · {group.movementType.toLowerCase() === 'relocation' && fromRacks ? `${fromRacks} → ${rack}` : rack}</Text>
       {statuses ? <Text style={styles.meta}>Status: {statuses}</Text> : null}
       {group.items.slice(0, 3).map(item => (
-        <Text key={`${item.id ?? item.rfid_number ?? ''}-${item.created_at}`} style={styles.rfid}>
-          {item.rfid_number ?? 'RFID tidak tersedia'}
+        <Text key={`${item.id ?? item.rfid_number ?? item.item?.rfid_number ?? ''}-${item.created_at}`} style={styles.rfid}>
+          {item.rfid_number ?? item.item?.rfid_number ?? 'RFID tidak tersedia'}
         </Text>
       ))}
       {group.items.length > 3 ? <Text style={styles.meta}>+{group.items.length - 3} RFID lainnya</Text> : null}

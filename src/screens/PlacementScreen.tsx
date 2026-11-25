@@ -7,7 +7,6 @@ import {
   fetchActiveRacks,
   isInitialPlacementSuccess,
   isReusableSuccess,
-  PlacementApiError,
   PlacementTimeoutError,
   previewPlacement,
   type PreviewData,
@@ -29,37 +28,14 @@ import {
   type PendingPlacementSubmission,
 } from '../storage/placementSubmissionRepo';
 import { localDateTime } from '../domain/datetime';
+import { errorMessage as placementErrorMessage, previewItemMessage } from '../domain/placementErrors';
 import { colors, fonts, radius, spacing, type } from '../theme';
+import { getPendingRelocationSubmission } from '../storage/relocationSubmissionRepo';
 
 type SubmitState = 'idle' | 'loading' | 'success' | 'error';
 
-const BUSINESS_MESSAGES: Record<string, string> = {
-  RFID_NOT_REGISTERED: 'RFID belum didaftarkan Admin.',
-  PACK_PLAN_NOT_FOUND: 'RFID belum memiliki pack plan.',
-  RFID_ALREADY_PLACED: 'Barang sudah pernah ditempatkan.',
-  PACK_PLAN_CANCELLED: 'Pack plan sudah dibatalkan.',
-  RACK_NOT_FOUND: 'Rak tidak ditemukan.',
-  RACK_INACTIVE: 'Rak sudah tidak aktif. Muat ulang daftar rak.',
-  DUPLICATE_RFID: 'RFID muncul lebih dari satu kali.',
-  duplicate_in_request: 'RFID muncul lebih dari satu kali.',
-  IDEMPOTENCY_KEY_REUSED: 'Request placement ini sudah dipakai untuk data berbeda.',
-  PLACEMENT_CONFLICT: 'Barang sedang diproses oleh request lain.',
-};
-
 function errorMessage(error: unknown): string {
-  if (error instanceof PlacementApiError) {
-    const firstError = error.body.errors?.[0];
-    return (
-      BUSINESS_MESSAGES[firstError?.code ?? ''] ??
-      firstError?.message ??
-      error.body.message ??
-      'Placement gagal diproses.'
-    );
-  }
-  if (error instanceof PlacementTimeoutError) {
-    return 'Server belum memberikan jawaban. Anda dapat mencoba lagi dengan request ID yang sama.';
-  }
-  return error instanceof Error ? error.message : 'Terjadi kesalahan. Coba lagi.';
+  return placementErrorMessage(error, 'Placement gagal diproses.');
 }
 
 function rfidKey(value: string): string {
@@ -69,10 +45,6 @@ function rfidKey(value: string): string {
 function clientRequestId(): string {
   const random = () => Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
   return `MOBILE-${random()}-${random()}-${Date.now().toString(16)}`;
-}
-
-function previewItemMessage(item: PreviewItem): string | undefined {
-  return BUSINESS_MESSAGES[item.error_code ?? ''] ?? item.message;
 }
 
 export function PlacementScreen() {
@@ -89,6 +61,7 @@ export function PlacementScreen() {
   const [error, setError] = useState<string>();
   const [successText, setSuccessText] = useState<string>();
   const [pending, setPending] = useState<PendingPlacementSubmission | null>(null);
+  const [blockedByRelocation, setBlockedByRelocation] = useState(false);
   const autoRetried = useRef(false);
   const scannedRfidKeys = useRef(new Set<string>());
 
@@ -130,7 +103,7 @@ export function PlacementScreen() {
   }, [addRfid]);
 
   const reader = useUhfReader({
-    enabled: focused && settings.readerMode === 'sdk' && !pending,
+    enabled: focused && settings.readerMode === 'sdk' && !pending && !blockedByRelocation,
     onTag,
   });
 
@@ -199,7 +172,8 @@ export function PlacementScreen() {
 
   useEffect(() => {
     void loadRacks();
-    void getPendingPlacementSubmission().then(saved => {
+    void Promise.all([getPendingPlacementSubmission(), getPendingRelocationSubmission()]).then(([saved, relocation]) => {
+      setBlockedByRelocation(Boolean(relocation));
       if (!saved) return;
       setPending(saved);
       scannedRfidKeys.current = new Set(saved.rfidNumbers.map(rfidKey));
@@ -210,6 +184,13 @@ export function PlacementScreen() {
       }
     });
   }, [loadRacks, submitSaved]);
+
+  useEffect(() => {
+    if (!focused) return;
+    void getPendingRelocationSubmission().then(relocation => {
+      setBlockedByRelocation(Boolean(relocation));
+    });
+  }, [focused]);
 
   const submit = useCallback(async () => {
     if (
@@ -254,14 +235,15 @@ export function PlacementScreen() {
       validatedItems.every(item => item.eligible),
   );
 
-  const rackSelectionEnabled = validationPassed && !pending && !validating;
+  const rackSelectionEnabled = validationPassed && !pending && !validating && !blockedByRelocation;
 
   const canSubmit = Boolean(
     scannedRfidNumbers.length > 0 &&
       selectedRack &&
       validationPassed &&
       submitState !== 'loading' &&
-      !pending,
+      !pending &&
+      !blockedByRelocation,
   );
 
   const allScannedValidated = useMemo(
@@ -278,6 +260,13 @@ export function PlacementScreen() {
         </View>
         <Badge label={`${scannedRfidNumbers.length} RFID`} variant="accent" />
       </View>
+
+      {blockedByRelocation && !pending ? (
+        <Card tone="danger" style={styles.card}>
+          <Text style={styles.cardTitle}>Ada relocation yang masih tertunda</Text>
+          <Text style={styles.helper}>Selesaikan atau ulangi relocation tersebut terlebih dahulu agar tidak membuat submission baru.</Text>
+        </Card>
+      ) : null}
 
       {pending ? (
         <Card tone="danger" style={styles.card}>
@@ -319,7 +308,7 @@ export function PlacementScreen() {
             variant={reader.reading ? 'danger' : 'primary'}
             compact
             onPress={() => void (reader.reading ? reader.stop() : reader.start())}
-            disabled={Boolean(pending)}
+            disabled={Boolean(pending) || blockedByRelocation}
             style={styles.buttonTop}
           />
         ) : null}
@@ -360,7 +349,7 @@ export function PlacementScreen() {
         label={validating ? 'Memvalidasi…' : 'Validasi RFID'}
         loading={validating}
         onPress={() => void validate()}
-        disabled={Boolean(pending) || scannedRfidNumbers.length === 0 || validating}
+        disabled={Boolean(pending) || blockedByRelocation || scannedRfidNumbers.length === 0 || validating}
         style={styles.buttonBottom}
       />
 

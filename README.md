@@ -1,7 +1,7 @@
 # OPTIMA RFID
 
 Aplikasi Android React Native untuk site employee pada handheld UHF. Flow P0 saat ini
-adalah **placement barang hasil repacking ke rak active** melalui API backend utama.
+mencakup **placement barang hasil repacking** dan **relocation barang placed ke rak active lain** melalui API backend utama.
 Backend menjadi source of truth; mobile hanya menyimpan pending submission sementara agar
 retry timeout tetap menggunakan payload dan `client_request_id` yang sama.
 
@@ -23,7 +23,8 @@ mode yang aktif pada unit Anda.
 ## 2. Fitur
 
 - **Placement** — scan satu atau banyak RFID, deduplikasi, preview eligibility, pilih rak active, review, dan submit.
-- **History** — ringkasan placement dari API backend.
+- **Relocation** — pilih rak tujuan terlebih dahulu, gabungkan RFID dari beberapa rak asal, preview detail dan summary, lalu submit atomic.
+- **History** — ringkasan placement dan relocation dari API backend.
 - **Reader UHF** — scan melalui tombol fisik handheld dengan feedback haptic.
 
 ---
@@ -103,6 +104,14 @@ cd android && ENVFILE=.env.production ./gradlew assembleRelease
 5. Jika request timeout, aplikasi otomatis retry sekali dan mempertahankan ID yang sama.
 6. Lihat tab **History** untuk ringkasan placement dari backend.
 
+### Cara pakai relocation
+
+1. Buka tab **Relocation** dan pilih satu rak tujuan active.
+2. Scan RFID dari satu atau beberapa rak asal. RFID duplicate diabaikan.
+3. Periksa preview detail, rak asal, summary per rak dan per produk.
+4. Tekan **Konfirmasi & submit relocation** hanya jika semua item eligible.
+5. Jika request timeout, aplikasi retry dengan `client_request_id` yang sama.
+
 ### Build APK
 
 ```bash
@@ -181,10 +190,12 @@ cd android && ./gradlew assembleDebug
 
 ```
 src/
-├─ api/placementApi.ts              # racks, preview, placement, history
+├─ api/placementApi.ts              # racks, preview, placement, relocation, history
 ├─ screens/PlacementScreen.tsx      # scan → preview → rak → submit
+├─ screens/RelocationScreen.tsx     # rak tujuan → scan → preview → submit
 ├─ screens/PlacementHistoryScreen.tsx
 ├─ storage/placementSubmissionRepo.ts # pending idempotent request
+├─ storage/relocationSubmissionRepo.ts # pending relocation request
 ├─ domain/placement.ts              # grouping history dan label UI
 ├─ reader/                           # bridge UHF handheld
 └─ navigation/                       # tab Placement dan History
@@ -199,6 +210,18 @@ Reader UHF
   → GET /api/mobile/racks?status=active
   → review
   → POST /api/mobile/placements
+  → GET /api/mobile/placements/history
+```
+
+Alur relocation:
+
+```
+Pilih rak tujuan
+  → Reader UHF / input manual
+  → dedupe RFID
+  → POST /api/mobile/placements/relocation/preview
+  → review detail dan summary
+  → POST /api/mobile/placements/relocation
   → GET /api/mobile/placements/history
 ```
 

@@ -4,7 +4,7 @@ Dokumen ini adalah kontrak integrasi untuk repo mobile React Native. Mobile digu
 
 ## Prioritas implementasi
 
-- **P0 — Kerjakan sekarang:** flow placement pertama dan relocation dengan review sebelum submit.
+- **P0 — Kerjakan sekarang:** flow placement pertama, relocation, dan opname mobile dengan review sebelum submit.
 - **P1 — Pendukung:** hanya jika diperlukan untuk testing atau pengalaman integrasi.
 - **P2 — Memory:** jangan dikerjakan sekarang; hanya pengingat roadmap.
 
@@ -117,6 +117,75 @@ Selama scan dan preview belum selesai, database tidak berubah. Preview hanya
 menilai kelayakan dan mengembalikan detail barang. Perubahan rak hanya terjadi
 setelah final submit berhasil.
 
+### Flow P0 — Opname mobile
+
+Opname adalah report kondisi inventory, bukan placement dan bukan adjustment
+stok. User dapat melakukan opname dari rak mana pun dalam satu sesi. Saat sesi
+dibuat, backend mengambil snapshot semua RFID yang saat itu memenuhi syarat:
+
+```text
+RFID terdaftar Admin
+  -> sudah di-assign ke pack plan
+  -> label sudah dicetak
+  -> PO sudah completed
+  -> placement_status = placed
+  -> memiliki current_rack
+```
+
+Mobile tidak perlu scan rak. Rak report diambil dari `current_rack` terakhir yang
+tersimpan di backend, termasuk jika RFID sebelumnya sudah mengalami relocation.
+Konsekuensinya, flow ini memeriksa lokasi sistem; flow ini belum dapat
+mendeteksi barang yang secara fisik diletakkan di rak berbeda tanpa scan rak.
+
+```text
+Opname home
+  -> tekan Buat sesi opname
+  -> backend menyimpan session_date dan snapshot RFID placed
+  -> scan satu atau banyak UID dari rak mana pun
+  -> deduplicate UID pada buffer lokal
+  -> kirim batch scan ke backend
+  -> tampilkan preview yang dikelompokkan per current_rack
+  -> buka detail rak untuk melihat produk, SKU, pack, unit, dan UID
+  -> tampilkan kategori sesuai, belum terbaca, lifecycle berubah, dan ditolak
+  -> user review hasil
+  -> submit laporan opname
+  -> tampilkan konfirmasi dan status submitted
+```
+
+UI mobile yang disarankan:
+
+- halaman daftar sesi: nomor sesi, tanggal, status, dan ringkasan jumlah item;
+- tombol `Buat sesi opname` dengan catatan opsional;
+- halaman scan dengan jumlah UID buffer dan tombol `Proses scan`;
+- kartu rak yang menampilkan `terbaca / ekspektasi` dan jumlah selisih;
+- detail rak berbentuk accordion atau halaman detail;
+- bagian khusus `Scan ditolak` agar UID invalid tidak tercampur dengan hasil sah;
+- tombol `Submit laporan` hanya aktif pada sesi `draft`;
+- dialog konfirmasi menyebutkan jumlah sesuai, belum terbaca, lifecycle berubah,
+  dan scan ditolak.
+
+Submit tidak mengubah `current_rack_id`, `placement_status`, atau saldo stok.
+Sesi yang sudah `submitted` tidak boleh diedit; koreksi dilakukan dengan sesi
+opname baru atau workflow adjustment supervisor pada fase berikutnya.
+
+#### Syarat dan pesan validasi opname
+
+Backend memvalidasi ulang saat scan dan submit. Gunakan pesan berdasarkan kode:
+
+| Code                            | Pesan mobile                                                      |
+| ------------------------------- | ----------------------------------------------------------------- |
+| `RFID_NOT_REGISTERED`           | RFID belum didaftarkan Admin.                                     |
+| `PACK_PLAN_NOT_FOUND`           | RFID belum memiliki pack plan aktif.                              |
+| `RFID_ADMIN_NOT_READY`          | RFID belum selesai assignment, cetak label, atau penyelesaian PO. |
+| `RFID_NOT_PLACED`               | RFID belum melalui placement dan belum dapat diopname.            |
+| `RFID_LOCATION_NOT_FOUND`       | RFID placed tetapi lokasi rak tidak ditemukan.                    |
+| `RFID_ACTION_ALREADY_COMPLETED` | RFID sudah outbound/trash dan bukan stok aktif.                   |
+| `RFID_NOT_IN_SNAPSHOT`          | RFID belum ada ketika sesi dibuat; gunakan sesi opname baru.      |
+| `DUPLICATE_IN_SESSION`          | RFID sudah pernah terbaca pada sesi ini.                          |
+
+RFID yang ditolak dicatat sebagai scan event rejected untuk audit, tetapi tidak
+masuk item report yang sah.
+
 ## Aturan integrasi
 
 1. Mobile tidak mengakses database secara langsung.
@@ -141,10 +210,34 @@ setelah final submit berhasil.
     preview item, atau submission.
 18. Jika satu item pada preview tidak eligible, tombol submit disabled sampai
     item tersebut dihapus atau scan diperbaiki.
+19. Opname hanya menerima RFID yang sudah `placed` dan memiliki `current_rack`.
+20. Opname tidak boleh membuat RFID baru, mengubah rak, atau mengubah saldo stok.
+21. Snapshot ekspektasi dibuat saat sesi opname dibuat; jangan mengganti hasil
+    sesi lama dengan data lokasi terbaru setelah sesi berjalan.
+22. UID yang sudah pernah scan dalam sesi opname dihitung satu kali; `scan_count`
+    hanya untuk informasi jumlah pembacaan reader.
 
 ## API contract
 
 Base URL mengikuti environment mobile.
+
+Semua endpoint di bawah dipanggil langsung oleh aplikasi mobile ke API. Mobile
+tidak memanggil database dan tidak menggunakan route Web Admin. Pada development
+lokal, contoh konfigurasi yang dipakai:
+
+```env
+API_BASE_URL=http://192.168.18.16:3000
+```
+
+Health check sebelum memulai pekerjaan:
+
+```http
+GET /health
+```
+
+Request `POST` wajib mengirim `Content-Type: application/json`. Auth belum
+diaktifkan pada fase ini, sehingga jangan mengirim `RFID_GATEWAY_TOKEN` dari
+mobile; token tersebut hanya untuk gateway Orange Pi.
 
 ### 1. Daftar rak aktif
 
@@ -227,7 +320,7 @@ Jika RFID belum terdaftar, preview tetap dapat merespons HTTP `200`, tetapi item
         "rfid_number": "RFID-UNKNOWN",
         "eligible": false,
         "error_code": "RFID_NOT_REGISTERED",
-        "message": "RFID tag is not registered."
+        "message": "RFID belum didaftarkan Admin. Pastikan RFID sudah di-assign ke pack plan, label sudah dicetak, dan session PO sudah diselesaikan."
       }
     ]
   }
@@ -235,6 +328,41 @@ Jika RFID belum terdaftar, preview tetap dapat merespons HTTP `200`, tetapi item
 ```
 
 Mobile wajib memanggil preview setelah tombol **Validasi RFID** ditekan. Sebelum preview sukses dan semua `data.items[].eligible` bernilai `true`, pilihan rak dan submit harus disabled.
+
+### Syarat RFID siap dari Admin
+
+Status `tag_assigned` saja belum membuat RFID eligible untuk placement. Backend
+hanya mengizinkan placement jika seluruh syarat berikut terpenuhi:
+
+1. RFID sudah terhubung ke pack plan;
+2. status pack plan sudah `label_printed`;
+3. item RFID sudah berstatus `printed`;
+4. PO session sudah berstatus `completed`.
+
+Jika RFID belum di-print atau session belum diselesaikan, preview mengembalikan
+`eligible: false` dengan `error_code: RFID_ADMIN_NOT_READY`. Pesan mobile yang
+ditampilkan:
+
+> RFID belum didaftarkan Admin. Pastikan RFID sudah di-assign ke pack plan, label
+> sudah dicetak, dan session PO sudah diselesaikan.
+
+Response dapat menyertakan rincian berikut untuk kebutuhan debugging atau
+indikator di UI:
+
+```json
+{
+  "error_code": "RFID_ADMIN_NOT_READY",
+  "admin_readiness": {
+    "assigned": true,
+    "label_printed": false,
+    "session_completed": false
+  }
+}
+```
+
+Validasi yang sama dilakukan ulang pada submit final. Jadi RFID tidak dapat
+melewati aturan hanya karena preview dilakukan sebelum Admin menyelesaikan
+print atau session.
 
 ### 3. Relocation preview
 
@@ -318,17 +446,18 @@ Contoh item invalid:
 
 Kode preview relocation yang penting:
 
-| Code                            | Arti                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `RFID_NOT_REGISTERED`           | UID belum terdaftar pada flow mobile. Mobile tidak boleh auto-register. |
-| `PACK_PLAN_NOT_FOUND`           | UID tidak memiliki pack plan.                                           |
-| `RFID_NOT_PLACED`               | UID belum berada di rak.                                                |
-| `RFID_ACTION_ALREADY_COMPLETED` | Lifecycle sudah outbound/trash dan tidak dapat direlokasi.              |
-| `RFID_LOCATION_NOT_FOUND`       | Status placed tidak memiliki rak aktif.                                 |
-| `SAME_RACK`                     | Rak tujuan sama dengan rak asal.                                        |
-| `PACK_PLAN_CANCELLED`           | Pack plan telah dibatalkan.                                             |
-| `RACK_NOT_FOUND`                | Rak tujuan tidak ditemukan.                                             |
-| `RACK_INACTIVE`                 | Rak tujuan tidak active.                                                |
+| Code                            | Arti                                                                                               |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `RFID_NOT_REGISTERED`           | UID belum terdaftar pada flow mobile. Mobile tidak boleh auto-register.                            |
+| `PACK_PLAN_NOT_FOUND`           | UID tidak memiliki pack plan.                                                                      |
+| `RFID_ADMIN_NOT_READY`          | RFID sudah dikenal, tetapi assignment, print label, atau penyelesaian session Admin belum lengkap. |
+| `RFID_NOT_PLACED`               | UID belum berada di rak.                                                                           |
+| `RFID_ACTION_ALREADY_COMPLETED` | Lifecycle sudah outbound/trash dan tidak dapat direlokasi.                                         |
+| `RFID_LOCATION_NOT_FOUND`       | Status placed tidak memiliki rak aktif.                                                            |
+| `SAME_RACK`                     | Rak tujuan sama dengan rak asal.                                                                   |
+| `PACK_PLAN_CANCELLED`           | Pack plan telah dibatalkan.                                                                        |
+| `RACK_NOT_FOUND`                | Rak tujuan tidak ditemukan.                                                                        |
+| `RACK_INACTIVE`                 | Rak tujuan tidak active.                                                                           |
 
 ### 4. Final placement
 
@@ -451,7 +580,184 @@ berlaku pada flow Admin realtime PO, bukan pada handheld site employee.
 Semua action memakai `client_request_id` yang idempotent. Jangan memakai ID
 yang sama untuk placement, relocation, outbound, atau trash yang berbeda.
 
-### 6. Simple history
+### 6. Opname session dan report
+
+#### 6.1 Buat sesi opname
+
+```http
+POST /api/mobile/stocktakes
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "notes": "Opname area gudang A"
+}
+```
+
+`session_number` boleh dikirim jika mobile memiliki format nomor sendiri. Jika
+tidak dikirim, backend membuat nomor `OPN-...` dan menyimpan `session_date`
+berdasarkan waktu server. Pembuatan sesi sekaligus mengambil snapshot seluruh
+RFID eligible yang sedang `placed`.
+
+#### 6.2 Daftar dan detail sesi
+
+```http
+GET /api/mobile/stocktakes
+GET /api/mobile/stocktakes/{stocktake_session_id}
+```
+
+Status sesi:
+
+| Status      | Arti                                                      |
+| ----------- | --------------------------------------------------------- |
+| `draft`     | Masih dapat menerima scan dan belum final.                |
+| `submitted` | Report sudah disubmit dan tidak dapat diedit.             |
+| `cancelled` | Sesi dibatalkan dan tidak digunakan sebagai report final. |
+
+#### 6.3 Kirim hasil scan
+
+```http
+POST /api/mobile/stocktakes/{stocktake_session_id}/scans
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "rfid_numbers": ["RFID-001", "RFID-002"],
+  "client_request_id": "STOCKTAKE-SCAN-UUID"
+}
+```
+
+`client_request_id` dibuat satu kali untuk satu batch scan. Jika request timeout,
+retry dengan payload dan ID yang sama. Jangan membuat batch baru hanya karena
+request belum menerima response.
+
+Scan yang valid mengambil `current_rack` dari pack plan. Response mengembalikan
+report terbaru sehingga mobile dapat langsung merender preview:
+
+```json
+{
+  "success": true,
+  "data": {
+    "session": {
+      "id": "STOCKTAKE_UUID",
+      "session_number": "OPN-20261125-001",
+      "session_date": "2026-11-25",
+      "status": "draft"
+    },
+    "summary": {
+      "expected_count": 5,
+      "scanned_count": 4,
+      "missing_count": 1,
+      "changed_count": 0,
+      "rejected_count": 1,
+      "total_units_expected": 25,
+      "total_units_scanned": 20
+    },
+    "racks": [
+      {
+        "rack": {
+          "id": "RACK_UUID",
+          "code": "RAK-A",
+          "name": "Rak A"
+        },
+        "expected_count": 5,
+        "scanned_count": 4,
+        "missing_count": 1,
+        "changed_count": 0,
+        "items": [
+          {
+            "id": "STOCKTAKE_ITEM_UUID",
+            "rfid_number": "RFID-001",
+            "pack_plan_id": "PACK_PLAN_UUID",
+            "pack_number": 1,
+            "label_code": "LBL-001",
+            "sku": "KMR-SUSU-250",
+            "product_name": "Susu UHT 250 ml",
+            "base_unit": "pcs",
+            "units": 5,
+            "expected_rack": {
+              "id": "RACK_UUID",
+              "code": "RAK-A",
+              "name": "Rak A"
+            },
+            "observed_rack": {
+              "id": "RACK_UUID",
+              "code": "RAK-A",
+              "name": "Rak A"
+            },
+            "scan_count": 1,
+            "result": "matched"
+          }
+        ]
+      }
+    ],
+    "rejected_scans": []
+  },
+  "results": [
+    {
+      "rfid_number": "RFID-001",
+      "accepted": true,
+      "result": "matched"
+    }
+  ]
+}
+```
+
+Nilai `result` item:
+
+| Result              | Arti                                                              |
+| ------------------- | ----------------------------------------------------------------- |
+| `pending`           | Belum terbaca. Biasanya terlihat pada sesi draft sebelum submit.  |
+| `matched`           | RFID terbaca dan `current_rack` masih sama dengan snapshot awal.  |
+| `missing`           | Tidak terbaca sampai sesi disubmit, tetapi lifecycle masih valid. |
+| `lifecycle_changed` | RFID berubah lifecycle/lokasi setelah snapshot dibuat.            |
+
+Jika semua UID dalam satu batch ditolak, backend dapat mengembalikan HTTP `409`
+dengan `success: false`, `errors`, dan report terbaru pada `data`. Mobile harus
+tetap menampilkan report tersebut dan hanya menampilkan error pada UID terkait.
+
+#### 6.4 Submit report opname
+
+```http
+POST /api/mobile/stocktakes/{stocktake_session_id}/submit
+```
+
+Tidak ada payload wajib. Backend mengubah sesi dari `draft` menjadi `submitted`,
+menandai item yang belum terbaca sebagai `missing` atau `lifecycle_changed`, lalu
+mengembalikan report final. Request submit ulang pada sesi yang sama aman dan
+mengembalikan `reused: true`.
+
+```json
+{
+  "success": true,
+  "data": {
+    "session": {
+      "id": "STOCKTAKE_UUID",
+      "status": "submitted",
+      "submitted_at": "2026-11-25T08:30:00.000Z"
+    },
+    "summary": {
+      "expected_count": 5,
+      "scanned_count": 4,
+      "missing_count": 1,
+      "changed_count": 0,
+      "rejected_count": 1
+    },
+    "racks": []
+  }
+}
+```
+
+Mobile wajib mengosongkan buffer lokal hanya setelah response sukses diterima.
+Submit tidak mengubah placement, rak, atau saldo inventory.
+
+### 7. Simple history
 
 ```http
 GET /api/mobile/placements/history?limit=20&offset=0
@@ -507,8 +813,12 @@ status barang saat ini.
 - `relocationScannedItems`: daftar UID unik yang sudah discan sebelum preview.
 - `relocationPreviewItems`: detail hasil preview, termasuk `current_rack` dan `target_rack`.
 - `relocationSummary`: jumlah item per rak asal dan per produk.
+- `stocktakeSession`: sesi opname draft/submitted yang sedang dibuka.
+- `stocktakeRfidNumbers`: UID unik yang sudah terbaca pada sesi opname.
+- `stocktakeReport`: summary dan grouping report per rak dari backend.
+- `stocktakeRejectedScans`: UID yang ditolak beserta error code/message.
 - `submitState`: `idle`, `loading`, `success`, atau `error`.
-- `clientRequestId`: ID yang dibuat untuk satu submission.
+- `clientRequestId`: ID yang dibuat untuk satu batch scan atau submission.
 
 RFID duplicate harus dihapus/dideduplikasi di mobile, tetapi validasi duplicate tetap wajib dilakukan backend.
 
@@ -516,25 +826,51 @@ RFID duplicate harus dihapus/dideduplikasi di mobile, tetapi validasi duplicate 
 
 Tampilkan pesan yang mudah dipahami site employee untuk kode berikut:
 
-| Code                                      | Arti                                                              |
-| ----------------------------------------- | ----------------------------------------------------------------- |
-| `RFID_NOT_REGISTERED`                     | RFID belum didaftarkan Admin.                                     |
-| `PACK_PLAN_NOT_FOUND`                     | RFID belum memiliki pack plan.                                    |
-| `RFID_ALREADY_PLACED`                     | Barang sudah pernah ditempatkan.                                  |
-| `RFID_NOT_PLACED`                         | RFID belum berada di rak sehingga tidak dapat direlokasi/ditutup. |
-| `RFID_ACTION_ALREADY_COMPLETED`           | RFID sudah outbound atau trash.                                   |
-| `RFID_LOCATION_NOT_FOUND`                 | RFID placed tidak memiliki rak aktif.                             |
-| `SAME_RACK`                               | Relocation menuju rak yang sama ditolak.                          |
-| `RFID_ALREADY_REGISTERED`                 | UID sudah ada; gunakan assignment/reuse, bukan registrasi ulang.  |
-| `RFID_REUSE_NOT_RELEASED`                 | Siklus RFID lama belum selesai atau belum dilepas.                |
-| `PACK_PLAN_CANCELLED`                     | Pack plan sudah dibatalkan.                                       |
-| `RACK_NOT_FOUND`                          | Rak tidak ditemukan.                                              |
-| `RACK_INACTIVE`                           | Rak sudah tidak aktif.                                            |
-| `DUPLICATE_RFID` / `duplicate_in_request` | RFID muncul lebih dari satu kali.                                 |
-| `IDEMPOTENCY_KEY_REUSED`                  | Request ID dipakai untuk payload berbeda.                         |
-| `PLACEMENT_CONFLICT`                      | Barang sedang diproses oleh request lain.                         |
+| Code                                      | Arti                                                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `RFID_NOT_REGISTERED`                     | RFID belum didaftarkan Admin.                                                                                           |
+| `PACK_PLAN_NOT_FOUND`                     | RFID belum memiliki pack plan.                                                                                          |
+| `RFID_ALREADY_PLACED`                     | Barang sudah pernah ditempatkan.                                                                                        |
+| `RFID_NOT_PLACED`                         | RFID belum berada di rak sehingga tidak dapat direlokasi/ditutup.                                                       |
+| `RFID_ACTION_ALREADY_COMPLETED`           | RFID sudah outbound atau trash.                                                                                         |
+| `RFID_LOCATION_NOT_FOUND`                 | RFID placed tidak memiliki rak aktif.                                                                                   |
+| `RFID_NOT_IN_SNAPSHOT`                    | RFID belum ada saat sesi opname dibuat.                                                                                 |
+| `DUPLICATE_IN_SESSION`                    | RFID sudah pernah terbaca pada sesi opname.                                                                             |
+| `RFID_ADMIN_NOT_READY`                    | Assignment, print label, atau penyelesaian PO belum lengkap.                                                            |
+| `SAME_RACK`                               | Relocation menuju rak yang sama ditolak.                                                                                |
+| `RFID_ALREADY_REGISTERED`                 | UID sudah ada; gunakan assignment/reuse, bukan registrasi ulang.                                                        |
+| `RFID_ALREADY_ASSIGNED_TO_PO`             | RFID masih digunakan pada Session/PO lain. Lepas dari session lama terlebih dahulu sebelum digunakan pada session baru. |
+| `RFID_DUPLICATE_IN_ITEM`                  | RFID sudah terpasang pada item yang sama. Jangan scan UID yang sama lagi.                                               |
+| `RFID_DUPLICATE_IN_SESSION`               | RFID sudah digunakan pada item lain di session yang sama.                                                               |
+| `RFID_REUSE_NOT_RELEASED`                 | Siklus RFID lama belum selesai atau belum dilepas.                                                                      |
+| `RFID_NOT_AVAILABLE`                      | RFID belum berstatus available untuk assignment baru.                                                                   |
+| `RFID_RETIRED`                            | RFID sudah retired dan tidak dapat digunakan kembali.                                                                   |
+| `RFID_ADMIN_NOT_READY`                    | Assignment, print label, atau penyelesaian session Admin belum lengkap.                                                 |
+| `PACK_PLAN_CANCELLED`                     | Pack plan sudah dibatalkan.                                                                                             |
+| `RACK_NOT_FOUND`                          | Rak tidak ditemukan.                                                                                                    |
+| `RACK_INACTIVE`                           | Rak sudah tidak aktif.                                                                                                  |
+| `DUPLICATE_RFID` / `duplicate_in_request` | RFID muncul lebih dari satu kali.                                                                                       |
+| `IDEMPOTENCY_KEY_REUSED`                  | Request ID dipakai untuk payload berbeda.                                                                               |
+| `PLACEMENT_CONFLICT`                      | Barang sedang diproses oleh request lain.                                                                               |
 
 Jika final placement gagal, mobile tidak boleh mengubah status lokal menjadi `placed`.
+
+### Kategori alert
+
+Gunakan kategori berikut agar error bisnis tidak disalahartikan sebagai masalah
+koneksi:
+
+| Kategori           | Kapan digunakan                                                                         | Tindakan user                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `BERHASIL`         | RFID berhasil diproses atau seluruh batch valid                                         | Lanjutkan ke tahap berikutnya                                                      |
+| `DITOLAK`          | RFID duplicate, masih dipakai session lain, placed, retired, atau lifecycle tidak valid | Perbaiki UID atau lakukan release melalui Admin                                    |
+| `SESSION AKTIF`    | Scanner masih berjalan pada tab/perangkat lain                                          | Tutup scanner yang lain                                                            |
+| `KONEKSI TERPUTUS` | API, WebSocket, Orange Pi, atau jaringan benar-benar terputus                           | Periksa Orange Pi/jaringan, refresh, lalu hubungi Developer/Admin jika tetap gagal |
+
+Untuk RFID yang masih berada pada Session A, jangan langsung memindahkannya ke
+Session B. Admin harus melakukan release dari Session A terlebih dahulu. Setelah
+status kembali `available` dan seluruh validasi lifecycle terpenuhi, RFID dapat
+di-assign ke Session B.
 
 Tidak semua object pada `errors[]` selalu memiliki `code`, tetapi setiap error memiliki `message`. Gunakan prioritas pesan berikut:
 
@@ -563,7 +899,8 @@ Error placement contoh:
 
 ## Timeout, pending submission, dan retry
 
-Mobile boleh menyimpan submission pending di AsyncStorage karena payload placement bukan token/secret. Simpan payload lengkap dan ID yang sama:
+Mobile boleh menyimpan submission atau batch scan pending di AsyncStorage karena
+payload placement/opname bukan token/secret. Simpan payload lengkap dan ID yang sama:
 
 ```json
 {
@@ -571,6 +908,17 @@ Mobile boleh menyimpan submission pending di AsyncStorage karena payload placeme
   "rack_id": "RACK_UUID",
   "rfid_numbers": ["RFID-001", "RFID-002"],
   "created_at": "2026-11-19T10:30:00.000Z",
+  "status": "pending"
+}
+```
+
+Untuk batch scan opname, payload pending minimalnya:
+
+```json
+{
+  "stocktake_session_id": "STOCKTAKE_UUID",
+  "client_request_id": "STOCKTAKE-SCAN-UUID",
+  "rfid_numbers": ["RFID-001", "RFID-002"],
   "status": "pending"
 }
 ```
@@ -612,6 +960,16 @@ AsyncStorage tidak boleh digunakan untuk JWT/token ketika autentikasi mobile dit
 - [ ] Success membersihkan batch dan menampilkan konfirmasi.
 - [ ] Error tidak mengubah status lokal menjadi placed.
 - [ ] Simple history dapat ditampilkan.
+- [ ] Screen daftar dan buat sesi opname tersedia di mobile.
+- [ ] Sesi opname menyimpan tanggal pembuatan dari response backend.
+- [ ] Scan opname hanya menerima RFID yang sudah placed.
+- [ ] Preview opname dikelompokkan berdasarkan rak dari backend.
+- [ ] Detail produk, SKU, pack, unit, UID, dan result tampil pada detail rak.
+- [ ] Scan rejected ditampilkan terpisah dari item report yang sah.
+- [ ] Submit opname disabled jika sesi bukan `draft`.
+- [ ] Submit opname tidak mengubah placement atau saldo stok.
+- [ ] Retry batch scan memakai `client_request_id` yang sama.
+- [ ] Sesi submitted tidak dapat diedit dari mobile.
 
 ## P1 — Pendukung, bukan blocker
 
@@ -627,13 +985,69 @@ digunakan pada barang repack baru melalui assignment Admin. Mobile tidak boleh
 menghapus histori atau mengasumsikan RFID hanya dapat dipakai sekali seumur
 hidup.
 
+### RFID history lintas cycle
+
+Backend menyimpan lifecycle history RFID agar penggunaan ulang tetap dapat
+ditelusuri. Endpoint detailnya:
+
+```http
+GET /api/rfid/{rfid_tag_id}/history
+```
+
+Response berisi `tag` dan daftar `events` berurutan:
+
+```json
+{
+  "success": true,
+  "data": {
+    "tag": {
+      "id": 1,
+      "rfid_number": "RFID-001",
+      "status": "available"
+    },
+    "events": [
+      {
+        "cycle_number": 1,
+        "event_type": "registered",
+        "created_at": "2026-11-19T08:00:00.000Z"
+      },
+      {
+        "cycle_number": 1,
+        "event_type": "placed",
+        "po_pack_plan_id": "PACK_PLAN_UUID",
+        "to_rack": {
+          "code": "RAK-A",
+          "name": "Rak A"
+        },
+        "created_at": "2026-11-19T10:00:00.000Z"
+      },
+      {
+        "cycle_number": 1,
+        "event_type": "outbound",
+        "created_at": "2026-11-20T10:00:00.000Z"
+      },
+      {
+        "cycle_number": 2,
+        "event_type": "assigned_to_pack",
+        "created_at": "2026-11-21T08:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+Event penting yang dapat muncul adalah `registered`, `assigned_to_pack`,
+`label_printed`, `po_completed`, `placed`, `relocated`, `stocktake_seen`,
+`stocktake_submitted`, `outbound`, `trash`, dan `available_for_reuse`.
+Mobile cukup menampilkan histori jika screen detail RFID dibutuhkan; mobile
+tidak boleh mengubah atau menghapus event history.
+
 ## P2 — Roadmap berikutnya
 
 ### Fitur lain
 
 Jangan implementasikan sekarang:
 
-- opname mingguan;
 - scan khusus proses repacking;
 - status `REPACKED`;
 - CRUD master rak;

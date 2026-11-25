@@ -6,6 +6,7 @@ export type PlacementHistoryGroup = {
   createdAt: string;
   movementType: string;
   rack?: HistoryItem['rack'];
+  fromRacks: NonNullable<HistoryItem['from_rack']>[];
   total: number;
   statuses: string[];
   items: HistoryItem[];
@@ -16,13 +17,18 @@ export function groupPlacementHistory(
 ): PlacementHistoryGroup[] {
   const groups = new Map<string, PlacementHistoryGroup>();
   for (const item of items) {
-    const key = item.client_request_id || item.id || item.rfid_number || item.created_at;
+    const rfidNumber = item.rfid_number ?? item.item?.rfid_number;
+    const status = item.placement_status ?? item.item?.placement_status;
+    const key = item.client_request_id || item.id || rfidNumber || item.created_at;
     const existing = groups.get(key);
     if (existing) {
       existing.total += 1;
       existing.items.push(item);
-      if (item.placement_status && !existing.statuses.includes(item.placement_status)) {
-        existing.statuses.push(item.placement_status);
+      if (item.from_rack && !existing.fromRacks.some(rack => rack.id === item.from_rack?.id)) {
+        existing.fromRacks.push(item.from_rack);
+      }
+      if (status && !existing.statuses.includes(status)) {
+        existing.statuses.push(status);
       }
       continue;
     }
@@ -32,8 +38,9 @@ export function groupPlacementHistory(
       createdAt: item.created_at,
       movementType: item.movement_type,
       rack: item.rack ?? undefined,
+      fromRacks: item.from_rack ? [item.from_rack] : [],
       total: 1,
-      statuses: item.placement_status ? [item.placement_status] : [],
+      statuses: status ? [status] : [],
       items: [item],
     });
   }

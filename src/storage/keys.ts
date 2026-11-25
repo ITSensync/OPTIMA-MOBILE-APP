@@ -13,6 +13,7 @@ export const KEYS = {
   inventoryHistory: `${NS}:inventoryHistory`,
   pendingPlacements: `${NS}:pendingPlacements`,
   pendingPlacementSubmission: `${NS}:pendingPlacementSubmission`,
+  pendingRelocationSubmission: `${NS}:pendingRelocationSubmission`,
   placements: `${NS}:placements`,
   placementsMigrated: `${NS}:placementsMigrated`,
 } as const;

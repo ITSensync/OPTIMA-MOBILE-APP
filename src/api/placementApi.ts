@@ -8,8 +8,21 @@ export type Rack = {
   status: string;
 };
 
+export type RackReference = Pick<Rack, 'id' | 'code' | 'name'>;
+
 export type PreviewItem = {
   rfid_number: string;
+  rfid_tag_id?: number;
+  pack_plan_id?: string;
+  pack_number?: number;
+  label_code?: string | null;
+  product_id?: string;
+  units?: number | null;
+  base_unit?: string | null;
+  expires_on?: string | null;
+  placement_status?: string | null;
+  current_rack?: RackReference | null;
+  target_rack?: RackReference | null;
   eligible: boolean;
   product_name?: string | null;
   sku?: string | null;
@@ -23,11 +36,16 @@ export type PreviewData = {
   items: PreviewItem[];
 };
 
+export type RelocationPreviewData = PreviewData & {
+  target_rack?: RackReference | null;
+};
+
 export type PlacementResponseData = {
   client_request_id?: string;
   reused?: boolean;
   rack?: Rack;
   total_placed?: number;
+  total_relocated?: number;
   placed_at?: string;
   items?: unknown[];
   [key: string]: unknown;
@@ -38,9 +56,18 @@ export type HistoryItem = {
   created_at: string;
   movement_type: string;
   client_request_id?: string | null;
-  rack?: Pick<Rack, 'id' | 'code' | 'name'> | null;
+  rack?: RackReference | null;
+  from_rack?: RackReference | null;
   placement_status?: string | null;
   rfid_number?: string;
+  item?: {
+    rfid_number?: string;
+    pack_plan_id?: string;
+    pack_number?: number;
+    sku?: string | null;
+    product_name?: string | null;
+    placement_status?: string | null;
+  } | null;
   [key: string]: unknown;
 };
 
@@ -190,6 +217,60 @@ export async function createPlacement(
   };
 }
 
+export async function previewRelocation(
+  rackId: string,
+  rfidNumbers: string[],
+): Promise<RelocationPreviewData> {
+  const { status, body } = await requestJson<{
+    success: boolean;
+    data: RelocationPreviewData;
+  }>('/api/mobile/placements/relocation/preview', {
+    method: 'POST',
+    body: JSON.stringify({ rack_id: rackId, rfid_numbers: rfidNumbers }),
+  });
+
+  if (!body.success) {
+    throw new PlacementApiError(status, body as unknown as ApiErrorBody);
+  }
+
+  return {
+    eligible: Boolean(body.data?.eligible),
+    target_rack: body.data?.target_rack ?? null,
+    items: Array.isArray(body.data?.items) ? body.data.items : [],
+  };
+}
+
+export async function createRelocation(
+  rackId: string,
+  rfidNumbers: string[],
+  clientRequestId: string,
+): Promise<{ status: number; data: PlacementResponseData }> {
+  const { status, body } = await requestJson<{
+    success: boolean;
+    data: PlacementResponseData;
+    reused?: boolean;
+  }>('/api/mobile/placements/relocation', {
+    method: 'POST',
+    body: JSON.stringify({
+      rack_id: rackId,
+      rfid_numbers: rfidNumbers,
+      client_request_id: clientRequestId,
+    }),
+  });
+
+  if (!body.success) {
+    throw new PlacementApiError(status, body as unknown as ApiErrorBody);
+  }
+
+  return {
+    status,
+    data: {
+      ...(body.data ?? {}),
+      reused: body.data?.reused ?? body.reused,
+    },
+  };
+}
+
 export async function fetchPlacementHistory(
   limit = 20,
   offset = 0,
@@ -217,4 +298,11 @@ export function isReusableSuccess(
 
 export function isInitialPlacementSuccess(status: number): boolean {
   return status === 201;
+}
+
+export function isFinalActionSuccess(
+  status: number,
+  data: PlacementResponseData,
+): boolean {
+  return status === 201 || isReusableSuccess(status, data);
 }
