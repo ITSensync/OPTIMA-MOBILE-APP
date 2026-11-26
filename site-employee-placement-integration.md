@@ -638,11 +638,24 @@ retry dengan payload dan ID yang sama. Jangan membuat batch baru hanya karena
 request belum menerima response.
 
 Scan yang valid mengambil `current_rack` dari pack plan. Response mengembalikan
-report terbaru sehingga mobile dapat langsung merender preview:
+report terbaru pada field `report`, sehingga mobile dapat langsung merender
+preview. Field `data` juga berisi report yang sama untuk kompatibilitas client
+lama:
 
 ```json
 {
   "success": true,
+  "report": {
+    "session": {
+      "id": "STOCKTAKE_UUID",
+      "session_number": "OPN-20261125-001",
+      "session_date": "2026-11-25",
+      "status": "draft"
+    },
+    "summary": {},
+    "racks": [],
+    "rejected_scans": []
+  },
   "data": {
     "session": {
       "id": "STOCKTAKE_UUID",
@@ -719,8 +732,126 @@ Nilai `result` item:
 | `lifecycle_changed` | RFID berubah lifecycle/lokasi setelah snapshot dibuat.            |
 
 Jika semua UID dalam satu batch ditolak, backend dapat mengembalikan HTTP `409`
-dengan `success: false`, `errors`, dan report terbaru pada `data`. Mobile harus
-tetap menampilkan report tersebut dan hanya menampilkan error pada UID terkait.
+dengan `success: false`, `errors`, `report`, dan `data` yang berisi report
+terbaru. Mobile harus tetap menampilkan `result.report` tersebut dan hanya
+menampilkan error pada UID terkait.
+
+#### 6.3.1 Handler mobile setelah klik Proses scan
+
+Mobile harus memperlakukan response `200` dan `409` sebagai response bisnis yang
+dapat berisi report. Jangan langsung mengubah `409` menjadi alert `Internal
+server error` sebelum membaca body response.
+
+Gunakan fallback berikut agar kompatibel dengan response saat ini:
+
+```ts
+type StocktakeScanResponse = {
+  success: boolean;
+  report?: StocktakeReport;
+  data?: StocktakeReport;
+  results?: StocktakeScanResult[];
+  message?: string;
+  errors?: Array<{
+    rfid_number?: string;
+    code?: string;
+    message: string;
+  }>;
+};
+
+function reportFromResponse(response: StocktakeScanResponse) {
+  return response.report ?? response.data ?? null;
+}
+```
+
+Contoh alur ketika client memakai `fetch` langsung:
+
+```ts
+const response = await fetch(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    rfid_numbers: stocktakeRfidNumbers,
+    client_request_id: stocktakeScanRequestId,
+  }),
+});
+
+const body = (await response.json()) as StocktakeScanResponse;
+const report = reportFromResponse(body);
+
+if (report) {
+  setStocktakeReport(report);
+}
+
+if (response.status === 409) {
+  // Ini business result, bukan otomatis masalah koneksi.
+  showRejectedResults(body.results ?? body.errors ?? []);
+  return;
+}
+
+if (!response.ok) {
+  showGenericError(body.message ?? 'Proses scan gagal.');
+  return;
+}
+```
+
+Jika API client melempar exception untuk HTTP `409`, ambil body dari lokasi
+yang digunakan library tersebut, misalnya `error.response.data`, `error.body`,
+atau `error.data`, lalu tetap jalankan:
+
+```ts
+const body = getErrorResponseBody(error);
+const report = reportFromResponse(body);
+if (report) setStocktakeReport(report);
+```
+
+Jangan membuat `client_request_id` baru ketika retry batch yang sama. Gunakan ID
+yang sama agar backend mengembalikan hasil idempotent dan tidak menggandakan
+event scan.
+
+#### 6.3.2 Mapping kartu preview opname
+
+Gunakan report yang sudah disimpan pada state mobile:
+
+```ts
+const items = report.racks.flatMap(rackGroup => rackGroup.items);
+
+const sesuai = items.filter(item => item.result === 'matched').length;
+const lifecycleBerubah = items.filter(
+  item => item.result === 'lifecycle_changed',
+).length;
+const belumTerbacaDraft = items.filter(
+  item => item.result === 'pending',
+).length;
+const scanDitolak = report.rejected_scans.length;
+```
+
+Mapping kartu:
+
+| Kartu UI                       | Sumber                                                               |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `Sesuai`                       | `report.summary.scanned_count` atau jumlah item `matched`.           |
+| `Ekspektasi`                   | `report.summary.expected_count`.                                     |
+| `Belum terbaca` saat `draft`   | Jumlah item dengan `result: "pending"`.                              |
+| `Belum terbaca` setelah submit | `report.summary.missing_count`.                                      |
+| `Lifecycle berubah`            | `report.summary.changed_count` atau jumlah item `lifecycle_changed`. |
+| `Scan ditolak`                 | `report.summary.rejected_count` atau `report.rejected_scans.length`. |
+
+Pada sesi `draft`, `missing_count` dapat bernilai `0` karena backend baru
+menandai item sebagai `missing` saat submit. Karena itu, kartu `Belum terbaca`
+harus memakai item `pending` selama user masih melakukan proses scan.
+
+Detail per rak dirender dari:
+
+```ts
+report.racks.map((rackGroup) => (
+  // rackGroup.rack.code
+  // rackGroup.scanned_count / rackGroup.expected_count
+  // rackGroup.items
+));
+```
+
+Detail item minimal menampilkan `rfid_number`, `sku`, `product_name`,
+`pack_number`, `units`, `expected_rack`, `observed_rack`, dan `result`.
 
 #### 6.4 Submit report opname
 
@@ -970,6 +1101,12 @@ AsyncStorage tidak boleh digunakan untuk JWT/token ketika autentikasi mobile dit
 - [ ] Submit opname tidak mengubah placement atau saldo stok.
 - [ ] Retry batch scan memakai `client_request_id` yang sama.
 - [ ] Sesi submitted tidak dapat diedit dari mobile.
+- [ ] Handler scan membaca `response.report` dengan fallback ke `response.data`.
+- [ ] HTTP `409` proses scan tetap merender report dan tidak menjadi alert koneksi.
+- [ ] `results` atau `errors` dari batch terakhir ditampilkan per UID.
+- [ ] Kartu `Belum terbaca` saat draft menghitung item `result: "pending"`.
+- [ ] Kartu `Belum terbaca` setelah submit memakai `summary.missing_count`.
+- [ ] Kartu `Sesuai`, `Ekspektasi`, `Lifecycle berubah`, dan `Scan ditolak` terisi dari report.
 
 ## P1 — Pendukung, bukan blocker
 

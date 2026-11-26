@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PlacementHistoryScreen } from '../screens/PlacementHistoryScreen';
 import { PlacementScreen } from '../screens/PlacementScreen';
 import { RelocationScreen } from '../screens/RelocationScreen';
+import { StocktakeScreen } from '../screens/StocktakeScreen';
 import { colors } from '../theme';
 import type { PlacementTabParamList } from './types';
 
@@ -32,6 +33,7 @@ const theme: Theme = {
 const ICONS: Record<keyof PlacementTabParamList, string> = {
   Placement: '▣',
   Relocation: '↔',
+  Stocktake: '✓',
   History: '≡',
 };
 
@@ -59,6 +61,7 @@ function Tabs() {
     >
       <Tab.Screen name="Placement" component={PlacementScreen} options={{ title: 'Placement' }} />
       <Tab.Screen name="Relocation" component={RelocationScreen} options={{ title: 'Relocation' }} />
+      <Tab.Screen name="Stocktake" component={StocktakeScreen} options={{ title: 'Opname' }} />
       <Tab.Screen
         name="History"
         component={PlacementHistoryScreen}

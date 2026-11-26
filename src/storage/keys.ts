@@ -14,6 +14,7 @@ export const KEYS = {
   pendingPlacements: `${NS}:pendingPlacements`,
   pendingPlacementSubmission: `${NS}:pendingPlacementSubmission`,
   pendingRelocationSubmission: `${NS}:pendingRelocationSubmission`,
+  pendingStocktakeScan: `${NS}:pendingStocktakeScan`,
   placements: `${NS}:placements`,
   placementsMigrated: `${NS}:placementsMigrated`,
 } as const;

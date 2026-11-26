@@ -24,6 +24,7 @@ mode yang aktif pada unit Anda.
 
 - **Placement** — scan satu atau banyak RFID, deduplikasi, preview eligibility, pilih rak active, review, dan submit.
 - **Relocation** — pilih rak tujuan terlebih dahulu, gabungkan RFID dari beberapa rak asal, preview detail dan summary, lalu submit atomic.
+- **Opname** — buat sesi dengan snapshot backend, scan UID dari rak mana pun, review report per rak, lalu submit tanpa mengubah stok.
 - **History** — ringkasan placement dan relocation dari API backend.
 - **Reader UHF** — scan melalui tombol fisik handheld dengan feedback haptic.
 
@@ -112,6 +113,15 @@ cd android && ENVFILE=.env.production ./gradlew assembleRelease
 4. Tekan **Konfirmasi & submit relocation** hanya jika semua item eligible.
 5. Jika request timeout, aplikasi retry dengan `client_request_id` yang sama.
 
+### Cara pakai opname
+
+1. Buka tab **Opname** lalu tekan **Buat sesi opname**. Backend membuat snapshot RFID placed.
+2. Scan RFID dari rak mana pun. UID duplicate diabaikan di buffer lokal.
+3. Tekan **Proses scan** untuk mengirim batch ke backend dan melihat report per rak.
+4. Buka kartu rak untuk melihat produk, SKU, pack, unit, UID, dan hasil scan.
+5. Periksa bagian **Scan ditolak**, lalu tekan **Submit laporan opname** setelah review.
+6. Sesi `submitted` tidak dapat diedit dan tidak mengubah rak, placement, atau saldo stok.
+
 ### Build APK
 
 ```bash
@@ -191,11 +201,14 @@ cd android && ./gradlew assembleDebug
 ```
 src/
 ├─ api/placementApi.ts              # racks, preview, placement, relocation, history
+├─ api/stocktakeApi.ts              # sesi, scan batch, report, dan submit opname
 ├─ screens/PlacementScreen.tsx      # scan → preview → rak → submit
 ├─ screens/RelocationScreen.tsx     # rak tujuan → scan → preview → submit
+├─ screens/StocktakeScreen.tsx      # sesi opname → scan → report → submit
 ├─ screens/PlacementHistoryScreen.tsx
 ├─ storage/placementSubmissionRepo.ts # pending idempotent request
 ├─ storage/relocationSubmissionRepo.ts # pending relocation request
+├─ storage/stocktakeRepo.ts         # pending batch scan opname
 ├─ domain/placement.ts              # grouping history dan label UI
 ├─ reader/                           # bridge UHF handheld
 └─ navigation/                       # tab Placement dan History
@@ -225,14 +238,25 @@ Pilih rak tujuan
   → GET /api/mobile/placements/history
 ```
 
+Alur opname:
+
+```
+Buat sesi (snapshot backend)
+  → Reader UHF / input manual
+  → dedupe UID
+  → POST /api/mobile/stocktakes/{id}/scans
+  → report per current_rack dan scan rejected
+  → POST /api/mobile/stocktakes/{id}/submit
+```
+
 Mobile tidak mengakses database dan tidak mengubah status lokal menjadi `placed`.
 Submission disimpan sebelum request dikirim. Timeout melakukan satu retry otomatis dengan
 payload serta `client_request_id` yang sama; pending request dipulihkan setelah restart.
 
 ### Penyimpanan lokal yang diizinkan
 
-AsyncStorage hanya digunakan untuk preferensi reader dan pending placement submission.
-Data rack, status barang, dan history tetap berasal dari backend.
+AsyncStorage digunakan untuk preferensi reader dan pending placement/relocation/stocktake
+request. Data snapshot, status barang, rak, report, dan history tetap berasal dari backend.
 
 ---
 

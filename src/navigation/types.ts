@@ -3,6 +3,7 @@ import type { NavigatorScreenParams } from '@react-navigation/native';
 export type PlacementTabParamList = {
   Placement: undefined;
   Relocation: undefined;
+  Stocktake: undefined;
   History: undefined;
 };
 

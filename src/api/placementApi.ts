@@ -121,7 +121,7 @@ function apiUrl(path: string): string {
   return `${API_BASE_URL.replace(/\/$/, '')}${path}`;
 }
 
-async function requestJson<T>(
+export async function requestJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
